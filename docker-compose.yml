@@ -1,0 +1,61 @@
+services:
+  # Default quick-start mode: FastAPI + SQLite (zero external dependencies)
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: keyloop-leads-api
+    ports:
+      - "8000:8000"
+    environment:
+      APP_NAME: "Keyloop Sales Lead Management API"
+      ENVIRONMENT: "development"
+      LOG_LEVEL: "INFO"
+      DATABASE_URL: "${DATABASE_URL:-sqlite:///./data/keyloop_leads.db}"
+      DEFAULT_DEALERSHIP_ID: "${DEFAULT_DEALERSHIP_ID:-11111111-1111-4111-8111-111111111111}"
+    volumes:
+      - sqlite_data:/app/data
+    restart: unless-stopped
+
+  # Production-parity mode: PostgreSQL 16 (start with: docker compose --profile postgres up --build)
+  postgres:
+    image: postgres:16-alpine
+    container_name: keyloop-leads-postgres
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-keyloop}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-keyloop}"
+      POSTGRES_DB: "${POSTGRES_DB:-keyloop_leads}"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-keyloop} -d ${POSTGRES_DB:-keyloop_leads}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  api-postgres:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: keyloop-leads-api-postgres
+    profiles: ["postgres"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8001:8000"
+    environment:
+      APP_NAME: "Keyloop Sales Lead Management API"
+      ENVIRONMENT: "production"
+      LOG_LEVEL: "INFO"
+      DATABASE_URL: "postgresql+psycopg://${POSTGRES_USER:-keyloop}:${POSTGRES_PASSWORD:-keyloop}@postgres:5432/${POSTGRES_DB:-keyloop_leads}"
+      DEFAULT_DEALERSHIP_ID: "${DEFAULT_DEALERSHIP_ID:-11111111-1111-4111-8111-111111111111}"
+    restart: unless-stopped
+
+volumes:
+  sqlite_data:
+  postgres_data:
