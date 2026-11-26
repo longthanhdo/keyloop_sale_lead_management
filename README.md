@@ -18,8 +18,9 @@ Backend service implementation for **Keyloop Engineering Manager Technical Asses
 
 ```text
 .
-├── SYSTEM_DESIGN.md                   # System Design Document (v1.0.0)
-├── .env.example                       # Environment variables template
+├── SYSTEM_DESIGN.md                     # System Design Document (v1.0.0)
+├── TEST_SPEC.md                         # Formal Test Specification & Traceability Matrix (50 cases)
+├── .env.example                         # Environment variables template
 ├── pyproject.toml                     # Python 3.12+ & Pytest configuration
 ├── requirements.txt                   # Runtime & testing dependencies
 ├── Dockerfile                         # Slim non-root Python 3.12 container
@@ -87,6 +88,8 @@ Interactive OpenAPI 3.1 / Swagger UI is available at:
 ```bash
 pytest
 ```
+
+See [TEST_SPEC.md](TEST_SPEC.md) for the formal Test Specification & Requirement Traceability Matrix covering all 50 test cases (`TC-BL-01` through `TC-OBS-04`).
 
 ---
 
