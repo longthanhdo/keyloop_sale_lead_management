@@ -1,5 +1,5 @@
-from collections.abc import Sequence
 import logging
+from collections.abc import Sequence
 from typing import Any
 from uuid import UUID
 

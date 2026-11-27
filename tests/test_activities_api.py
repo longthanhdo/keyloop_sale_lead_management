@@ -2,8 +2,8 @@ from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
-from fastapi.testclient import TestClient
 import pytest
+from fastapi.testclient import TestClient
 
 from tests.conftest import OTHER_DEALER_ID
 
