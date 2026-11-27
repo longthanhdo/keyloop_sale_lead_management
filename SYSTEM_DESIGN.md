@@ -66,7 +66,7 @@ flowchart TB
 
     subgraph Persistence["Persistence Layer"]
         DB[("SQLite (Dev/Test) / PostgreSQL 16 (Prod)")]
-        Alembic["Alembic Schema Migrations"]
+        Alembic["Alembic Schema Migrations (planned, not in MVP)"]
     end
 
     subgraph Observability["Cross-Cutting Observability"]
@@ -117,26 +117,47 @@ Where the assessment brief intentionally leaves requirements open, the following
 - **Defined Statuses**: `NEW`, `CONTACTED`, `QUALIFIED`, `TEST_DRIVE_SCHEDULED`, `NEGOTIATION`, `CONVERTED`, `LOST`.
 - **Automatic Progression on Activity Logging**:
   - When a substantive customer interaction (`CALL`, `EMAIL`, `SMS`, `QUOTE_SENT`, `MEETING`) is logged against a `NEW` lead, the service automatically transitions the lead status from `NEW` to `CONTACTED`.
-  - When a `TEST_DRIVE_SCHEDULED` activity is logged against a non-terminal lead, the status automatically advances to `TEST_DRIVE_SCHEDULED` (unless the caller provides an explicit `new_lead_status` override).
+  - When a `TEST_DRIVE_SCHEDULED` activity is logged against a `NEW`, `CONTACTED` or `QUALIFIED` lead, the status automatically advances to `TEST_DRIVE_SCHEDULED` (unless the caller provides an explicit `new_lead_status` override). Leads already in `NEGOTIATION` keep their status, so a test drive never moves a lead backwards.
   - Logging an internal `NOTE` updates `updated_at` but does **not** automatically change the lead status or `last_contacted_at`.
-- **Terminal States**: `CONVERTED` and `LOST` leads still permit retrospective activity logging (e.g., post-sale handover notes) without regressing their status unless explicitly reopened via `PATCH /api/v1/leads/{lead_id}`.
+- **Forward-Only Progression**: Status only moves forward through the funnel. Stages can be skipped (e.g., a walk-in customer can go straight from `NEW` to `TEST_DRIVE_SCHEDULED`), but never reversed. The single exception is `LOST → CONTACTED` when a customer re-engages.
+- **Terminal States**: `CONVERTED` is final and cannot be reopened. `LOST` can only be reopened to `CONTACTED`. Both still permit retrospective activity logging (e.g., post-sale handover notes) without changing their status.
+- **Enforcement**: Every manual status change (`PATCH /api/v1/leads/{lead_id}` or a `new_lead_status` override) is validated against the transition table below. An invalid transition returns RFC 7807 `409 Conflict`. Setting the current status again is a no-op.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> NEW : Website Enquiry Received
-    NEW --> CONTACTED : First Outreach Activity Logged
-    CONTACTED --> QUALIFIED : Needs & Budget Confirmed
-    QUALIFIED --> TEST_DRIVE_SCHEDULED : Test Drive Booked
-    TEST_DRIVE_SCHEDULED --> NEGOTIATION : Quote / Finance Discussed
-    QUALIFIED --> NEGOTIATION : Direct Quote Requested
-    NEGOTIATION --> CONVERTED : Deal Closed (Won)
-    NEW --> LOST : Unreachable / Duplicate
-    CONTACTED --> LOST : No Longer Interested
-    QUALIFIED --> LOST : Lost to Competitor
-    TEST_DRIVE_SCHEDULED --> LOST : Declined After Test Drive
-    NEGOTIATION --> LOST : Price / Finance Declined
-    LOST --> CONTACTED : Re-engaged by Customer
+    [*] --> NEW : Enquiry received
+    NEW --> CONTACTED : First outreach
+    CONTACTED --> QUALIFIED : Needs & budget confirmed
+    QUALIFIED --> TEST_DRIVE_SCHEDULED : Test drive booked
+    TEST_DRIVE_SCHEDULED --> NEGOTIATION : Quote / finance discussed
+    NEGOTIATION --> CONVERTED : Deal closed (won)
+    TEST_DRIVE_SCHEDULED --> CONVERTED : Bought after test drive
+    NEW --> QUALIFIED : Skip
+    NEW --> TEST_DRIVE_SCHEDULED : Skip
+    NEW --> NEGOTIATION : Skip
+    CONTACTED --> TEST_DRIVE_SCHEDULED : Skip
+    CONTACTED --> NEGOTIATION : Skip
+    QUALIFIED --> NEGOTIATION : Direct quote requested
+    NEW --> LOST
+    CONTACTED --> LOST
+    QUALIFIED --> LOST
+    TEST_DRIVE_SCHEDULED --> LOST
+    NEGOTIATION --> LOST
+    LOST --> CONTACTED : Re-engaged by customer
+    CONVERTED --> [*]
 ```
+
+**Allowed transitions** (implemented in `ALLOWED_STATUS_TRANSITIONS`, `app/core/enums.py`):
+
+| From | Allowed next statuses |
+|---|---|
+| `NEW` | `CONTACTED`, `QUALIFIED`, `TEST_DRIVE_SCHEDULED`, `NEGOTIATION`, `LOST` |
+| `CONTACTED` | `QUALIFIED`, `TEST_DRIVE_SCHEDULED`, `NEGOTIATION`, `LOST` |
+| `QUALIFIED` | `TEST_DRIVE_SCHEDULED`, `NEGOTIATION`, `LOST` |
+| `TEST_DRIVE_SCHEDULED` | `NEGOTIATION`, `CONVERTED`, `LOST` |
+| `NEGOTIATION` | `CONVERTED`, `LOST` |
+| `LOST` | `CONTACTED` (re-engaged) |
+| `CONVERTED` | none (terminal) |
 
 ### 2.2 Activity Taxonomy & Audit Immutability
 - **Supported Activity Types**: `CALL`, `EMAIL`, `SMS`, `TEST_DRIVE_SCHEDULED`, `QUOTE_SENT`, `MEETING`, `NOTE`, `STATUS_CHANGE`.
@@ -540,7 +561,7 @@ From an Engineering Management perspective, technology selection optimizes for *
 | Technology | Role | Why Chosen | Alternatives Considered & Trade-offs |
 | :--- | :--- | :--- | :--- |
 | **FastAPI (Python 3.12+)** | Web / API Framework | Native **Pydantic v2** validation (Rust-backed speed), first-class **OpenAPI 3.1 / Swagger UI** auto-generation (eliminates spec drift between frontend and backend teams), intuitive Dependency Injection (`Depends`) for clean testing and tenant scoping, and high ASGI concurrency. | **Django / DRF**: Heavier boilerplate for a focused microservice/API. **Flask**: Requires assembling multiple third-party plugins for validation, OpenAPI, and DI. |
-| **SQLAlchemy 2.0 + Alembic** | ORM, Query Builder & Migrations | Type-safe `Mapped[]` declarative syntax aligns with static type checkers (`mypy`/`pyright`); explicit Unit of Work transaction control; granular eager loading (`selectinload`) prevents N+1 regressions; seamless dialect portability between SQLite and PostgreSQL. | **Raw SQL / Psycopg**: Higher maintenance cost for dynamic Lead Inbox filters and schema portability. **SQLModel**: Thinner ecosystem maturity for complex query tuning compared to direct SQLAlchemy 2.0 + Pydantic v2 separation. |
+| **SQLAlchemy 2.0** (Alembic planned) | ORM, Query Builder & Migrations | **MVP note:** tables are created at startup with `Base.metadata.create_all()`; Alembic migrations are planned before the first production deployment. Type-safe `Mapped[]` declarative syntax aligns with static type checkers (`mypy`/`pyright`); explicit Unit of Work transaction control; granular eager loading (`selectinload`) prevents N+1 regressions; seamless dialect portability between SQLite and PostgreSQL. | **Raw SQL / Psycopg**: Higher maintenance cost for dynamic Lead Inbox filters and schema portability. **SQLModel**: Thinner ecosystem maturity for complex query tuning compared to direct SQLAlchemy 2.0 + Pydantic v2 separation. |
 | **SQLite (Dev/Test) -> PostgreSQL 16 (Prod)** | Relational Database | **SQLite** provides zero-dependency local setup for reviewers and sub-second automated test suites. **PostgreSQL 16** provides production MVCC concurrency, strict transactional integrity, Row-Level Security (RLS) for multi-tenancy, partial indexes, and `pg_trgm` text search. | **NoSQL (MongoDB/DynamoDB)**: Lead-to-activity data is inherently relational with ad-hoc multi-field filtering/sorting and strict transactional requirements; relational SQL is the natural fit. *(CI pipeline should run integration tests against a real PostgreSQL container to catch dialect edge cases early.)* |
 | **Pytest + HTTPX** | Automated Testing Framework | Composable fixture hierarchy enables clean per-test database isolation; `pytest.mark.parametrize` cleanly covers filtering/transition matrices; native integration with FastAPI's `TestClient` / `AsyncClient` supports fast API contract testing alongside unit tests. | **unittest**: More verbose boilerplate and weaker fixture composition than Pytest. |
 
@@ -581,27 +602,63 @@ From an Engineering Management perspective, technology selection optimizes for *
 
 ---
 
-## 8. GenAI Usage in the Design Phase
+## 8. GenAI Usage
 
-From an Engineering Management perspective, Generative AI was used intentionally as an **architecture sounding board and drafting accelerator**—never as an autonomous decision-maker. Every architectural trade-off, domain invariant, and production guardrail in this blueprint was explicitly reviewed, constrained, and validated against automotive retail workflows and Keyloop's multi-dealership operating context.
+AI use was permitted for the whole assessment. I treated AI the way I would treat a capable engineer joining my team: I gave it a clear specification, reviewed what it produced, and kept ownership of the decisions.
 
-### 8.1 Architecture Brainstorming & Trade-Off Analysis
-GenAI was leveraged early in the design phase to rapidly surface comparison matrices, edge cases, and failure modes across key architectural choices:
-- **Layered Modular Monolith vs. Microservices**: Evaluated deployment simplicity and single-transaction ACID guarantees (`activities` insert + `leads` state update) against independent scaling and team autonomy, validating that strict internal module boundaries provide future extractability without upfront distributed-systems tax.
-- **Offset vs. Cursor/Keyset Pagination**: Contrasted standard page-number navigation and `total_items` visibility for the MVP Lead Inbox against deep-page `OFFSET` scan degradation, establishing an explicit Stage 2 transition trigger to `(created_at, id)` keyset pagination.
-- **SQLite / PostgreSQL Portability**: Stress-tested SQLAlchemy 2.0 dialect parity early—identifying native `UUID` vs. `CHAR` serialization, SQLite's default-off foreign key enforcement (`PRAGMA foreign_keys = ON;`), `NULLS FIRST` sorting semantics, and PostgreSQL-only upgrades (partial indexes, `pg_trgm`, Row-Level Security).
+### 8.1 Tools and How I Used Them
 
-### 8.2 Engineering Leadership Decisions, Overrides & Guardrails
-Several initial AI-generated recommendations were deliberately **modified or rejected** to keep the architecture pragmatic, auditable, and compliant:
-- **Rejected Premature Service Decomposition & Infra Bloat**: Declined suggestions to split `leads` and `activities` into separate services or introduce Redis, Kafka, and async task queues in Stage 1. For an MVP serving dealership sales executives, a single stateless FastAPI service with strong relational consistency minimizes operational risk while preserving a clean evolution path (Section 7.4).
-- **Enforced Dual Timestamps (`occurred_at` vs. `created_at`)**: Overrode single-timestamp activity proposals to separate *when an interaction occurred* (`occurred_at`) from *when the server recorded it* (`created_at`). Dealership sales executives frequently log phone calls or showroom visits retroactively; separating these fields preserves accurate customer timelines without sacrificing immutable audit trails.
-- **Mandated Zero-PII Application Logging**: Rejected generic request/response body logging patterns in favor of strict PII exclusion—forbidding `email`, `phone`, `first_name`, `last_name`, and free-text `notes` from stdout logs and restricting log envelopes to opaque UUIDs (`lead_id`, `activity_id`), `correlation_id`, and non-PII metadata for GDPR compliance.
-- **Right-Sized MVP Auth vs. Multi-Tenant Readiness**: Replaced boilerplate full-IdP integration in the MVP scope with zero-config local defaults (`performed_by` payload + optional `X-Dealer-ID` header), while embedding `dealership_id` across every table, query, and composite index so production OIDC/JWT and PostgreSQL RLS plug in without schema rewrites.
+| Tool | What I used it for |
+|---|---|
+| **Gemini** (chat) | Understanding Keyloop's domain; structuring this document; a first draft of the assumptions, data model and API contracts; planning a one-week delivery; explaining standards before I adopted them (e.g. RFC 7807). |
+| **Google Antigravity** | Implementing the service from this document: FastAPI layers, the pytest suite, seed data, Docker setup, and a first draft of the README. |
+| **Claude** | Cross-model review of the finished design and code, and help structuring and editing this section. |
 
-### 8.3 Cross-Artifact Consistency Verification
-Before finalizing this document as an engineering blueprint, all AI-assisted drafts underwent manual end-to-end verification across four dimensions:
-1. **Diagram ↔ Schema ↔ API Contract Parity**: Cross-checked every column, enum value, optimistic locking counter (`version`), and HTTP header (`X-Correlation-ID`, `X-Dealer-ID`, `Idempotency-Key`) across the Mermaid architecture/sequence/ER diagrams (Sections 1.2, 2.1, 3.2, 4.1), table constraints and indexes (Section 4.2–4.3), and JSON request/response examples (Section 5.3).
-2. **MVP-to-Production Traceability**: Audited every MVP simplification (SQLite, offset pagination, synchronous writes, relaxed auth) to confirm it maps cleanly to a concrete, non-breaking production upgrade in Section 7.4 with no throwaway architecture.
-3. **Behavioral & Edge-Case Review**: Verified state-transition invariants (e.g., `NOTE` not mutating `last_contacted_at`, terminal states `CONVERTED`/`LOST` allowing post-sale notes without status regression) and RFC 7807 error contracts (`404`, `409`, `422`, `503`).
-4. **Formatting & Diagram QA**: Inspected rendered Mermaid diagrams, code/SQL configuration syntax (`PRAGMA foreign_keys = ON;`, `pool_recycle = 1800`), and Markdown structure to ensure the specification is clean, unambiguous, and immediately actionable for implementation.
+### 8.2 What I Kept and What I Changed
 
+Gemini's first blueprint for Scenario C was a sound starting point. I kept its core shape: a modular monolith, a leads table and an activities table, and logging an activity and updating the lead in one transaction. I changed the following:
+
+| Area | AI's first proposal | Final design | Why |
+|---|---|---|---|
+| Stack | Next.js/TypeScript with Prisma/SQLite (Gemini) | Python FastAPI, SQLAlchemy 2.0, Pydantic v2 (proposed by Antigravity, which I accepted) | The submission is backend-only, and FastAPI's built-in Swagger UI gave a working, documented interface without building a frontend. Python was also easier for me to read and review than TypeScript. |
+| Activity time | A single `created_at` | `occurred_at` and `created_at` | Sales executives often log calls and showroom visits later. One timestamp would put them in the wrong place on the customer timeline. |
+| Dealerships | Single dealership, no tenant column | `dealership_id` on every table, leading every composite index | Keyloop serves many dealerships. Adding tenancy later would mean rewriting the schema and indexes. |
+| Lead lifecycle | Five statuses, with an automatic `NEW → CONTACTED` | Adds `TEST_DRIVE_SCHEDULED` and `NEGOTIATION`, with an explicit transition table | Matches how a dealership sales funnel actually runs. |
+| Follow-up tracking | `last_activity_at`, updated by any activity | `last_contacted_at`, ignoring internal notes and never moving backwards | Follow-up triage needs the time of the last real customer contact. |
+| Concurrent edits | Only double-click prevention | Optimistic locking with a `version` column and a `409` response | Two people editing the same lead must not silently overwrite each other. |
+| Errors | Ad-hoc `400`/`404` responses | RFC 7807 problem details, including `correlation_id` | One consistent error format for API consumers, linked to the logs. |
+
+### 8.3 How I Verified the Output
+
+- **Automated tests:** Antigravity generated 50 pytest cases covering lifecycle rules, API contracts, dealership isolation, optimistic locking and zero-PII logging ([TEST_SPEC.md](TEST_SPEC.md)). I later added 74 edge-case tests with Claude, 3 of them marked xfail as known gaps. I re-ran the full suite myself: 121 pass, 3 xfail.
+- **Manual testing:** I tested the main flows by hand in Swagger UI: creating a lead, retrieving a lead with its activities, and logging follow-up activities.
+- **Cross-model review:** I had a different model (Claude) review the design document against the code (see 8.4).
+- **Limits:** my manual testing covered the main paths, not every edge case. When one agent writes both the code and the tests, the tests can share the code's blind spots. Performance targets have not been load-tested, and the PostgreSQL profile has had less testing than SQLite.
+
+### 8.4 Where the AI Output Needed Correcting
+
+Most of my corrections happened at the design stage (Section 8.2), so the generated code needed few changes for correctness. The cross-model review found problems in the AI-drafted documents rather than in the code:
+
+- **The design had drifted from the code.** The lifecycle diagram showed fewer transitions than the code allows, and this document described Alembic migrations that were never implemented. Section 2.1 now shows the exact transition table from the code, and Alembic is marked as planned (Section 6).
+- **The AI-drafted README overstated the process.** It described "line-by-line review" and declined infrastructure suggestions that never happened. I rewrote it to match what actually happened.
+
+The lesson: AI-written documentation needs the same verification as AI-written code.
+
+One detail worth noting in the code: Starlette middleware unwinds in reverse order, so the tenant middleware would clear its context variable before the access log middleware writes its entry. The access log therefore reads the dealership from `request.state`, and a regression test checks that access logs always include it.
+
+### 8.5 Known Open Points
+
+- Two users logging activities on the same lead at the same time: the second receives a `409`, although the actions don't really conflict. A server-side retry would fix this.
+- `occurred_at` is not validated. An activity can be dated in the future or before the lead was created.
+- An `occurred_at` without a time zone (for example `2026-11-26T18:30:00`) is silently treated as UTC. A client that sends local time would have the activity stored hours off. Rejecting it with `422` would fix this.
+- `Idempotency-Key` is listed in the API contract but not implemented in the MVP.
+- `performed_by` comes from the request body, and the dealership from the `X-Dealer-ID` header. In production, both must come from the authenticated user's token.
+- There is no index on `assigned_to` for a sales executive's "my leads" view.
+
+### 8.6 How I Would Apply This With a Team
+
+- A shared, version-controlled rules file for coding agents, so every engineer's agent follows the same architecture and quality rules.
+- AI-assisted changes go through normal code review, and the author must be able to explain them.
+- Automated tests against a real PostgreSQL database in CI are the safety net, not trust in the tool.
+- No customer data, credentials or confidential code in prompts to tools the company has not approved.
+- AI-written documentation is checked against the code, just like AI-written code is checked against the requirements.
