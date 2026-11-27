@@ -14,8 +14,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
-from fastapi.testclient import TestClient
 import pytest
+from fastapi.testclient import TestClient
 
 from app.core.enums import ActivityType, LeadStatus
 from app.core.exceptions import InvalidStatusTransitionError

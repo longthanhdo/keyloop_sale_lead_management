@@ -1,6 +1,7 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, status as http_status
+from fastapi import APIRouter, Depends, Query
+from fastapi import status as http_status
 
 from app.api.dependencies import get_activity_service, get_dealership_id
 from app.core.enums import SortOrder

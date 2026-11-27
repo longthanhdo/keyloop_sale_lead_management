@@ -1,6 +1,7 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Response, status as http_status
+from fastapi import APIRouter, Depends, Query, Response
+from fastapi import status as http_status
 from fastapi.exceptions import RequestValidationError
 
 from app.api.dependencies import get_dealership_id, get_lead_service

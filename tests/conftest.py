@@ -2,9 +2,9 @@ from collections.abc import Callable, Generator
 from typing import Any
 from uuid import UUID
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-import pytest
 
 from app.core.config import Settings
 from app.db.session import DatabaseManager, init_db

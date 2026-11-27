@@ -1,5 +1,5 @@
-from datetime import UTC, datetime
 import math
+from datetime import UTC, datetime
 from typing import Annotated
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, PlainSerializer

@@ -59,7 +59,7 @@ def create_session_factory(engine: Engine) -> sessionmaker[Session]:
 
 def init_db(engine: Engine) -> None:
     """Ensure all ORM models are registered and create tables if missing."""
-    import app.models.activity  # noqa: F401
+    import app.models.activity
     import app.models.lead  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
