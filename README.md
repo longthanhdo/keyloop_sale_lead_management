@@ -234,7 +234,7 @@ AI was used throughout this assessment. The full account, including what I chang
 |---|---|
 | **Gemini** (chat) | Domain research, structuring the design document, a first draft of assumptions, data model and API contracts, and delivery planning. |
 | **Google Antigravity** | Implementing the service from `SYSTEM_DESIGN.md`: FastAPI layers, the pytest suite, seed data, Docker setup, and a first draft of this README. |
-| **Claude** | Cross-model review of the finished design and code. |
+| **Claude** | Cross-model review of the finished design and code, then the edge-case test suite, the `occurred_at` validation fix, lint clean-up, and the PDF export of the design document. |
 
 The work was spec-first. I reworked Gemini's first blueprint before any code was written: dual activity timestamps (`occurred_at` and `created_at`), `dealership_id` on every table, a fuller lead lifecycle, and optimistic locking. Antigravity proposed FastAPI instead of Gemini's Next.js suggestion, and I accepted it for a backend-only submission. The finished `SYSTEM_DESIGN.md` was then the specification Antigravity built against.
 
@@ -245,7 +245,25 @@ The work was spec-first. I reworked Gemini's first blueprint before any code was
 - **Middleware ordering:** Starlette middleware unwinds in reverse order, so the tenant middleware would clear its context variable before the access log is written. The access log reads the dealership from `request.state` instead, and a regression test in [tests/test_observability_and_errors.py](tests/test_observability_and_errors.py) checks it.
 - **Cross-model review:** a review with Claude found that the design document had drifted from the code (the status diagram showed fewer transitions than the code allows, and Alembic was described but not used), and that an earlier version of this README overstated the process. Both documents were corrected.
 
-### 3. Known limits
+### 3. How I ensured the final quality of the code
+
+- **Tests as the quality gate:** the full suite (125 tests) runs with one command. The one known gap is marked `xfail(strict=True)`, so if it is ever fixed the suite fails until the marker is removed. Nothing is silently skipped.
+- **Tests from a second tool:** the edge-case suite was written with Claude, not the tool that wrote the code. It found three real gaps in `occurred_at` handling that the original tests had missed.
+- **Deciding what not to fix:** two gaps were fixed. The third (an activity dated before the lead was created) was left open on purpose, because a salesperson often takes a call before the lead exists. It is recorded in Section 8.5 of the design document.
+- **Every change through a pull request:** the edge-case tests, the `occurred_at` fix, lint clean-up and the PDF export were each made on their own branch and merged into `main` through a pull request, so each change can be reviewed on its own.
+- **Lint:** `ruff check .` passes with the project's settings in `pyproject.toml`.
+- **Docs kept in step with the code:** `SYSTEM_DESIGN.md`, `TEST_SPEC.md` and the PDF were updated with each change, so test counts, error codes and open points match the code.
+- **Fresh-start check:** a fresh clone was installed and tested using the instructions above, and the Docker image builds.
+
+To run the same checks:
+
+```bash
+pytest                          # expected: 124 passed, 1 xfailed
+pip install "ruff>=0.7,<1.0"    # ruff is a dev tool, not in requirements.txt
+ruff check .                    # expected: All checks passed!
+```
+
+### 4. Known limits
 
 - When one agent writes both the code and the tests, the tests can share the code's blind spots. My manual testing covered the main paths, not every edge case.
 - Performance targets have not been load-tested, and the PostgreSQL profile has had less testing than SQLite.
