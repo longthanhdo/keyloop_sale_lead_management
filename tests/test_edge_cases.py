@@ -213,26 +213,15 @@ def test_occurred_at_with_timezone_offset_is_converted_to_utc(
     assert resp.json()["lead_snapshot"]["last_contacted_at"] == "2026-11-26T11:30:00Z"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Open point: a time without a time zone is silently treated as UTC. "
-        "A client sending local time would be stored hours off. "
-        "Recommended: reject with 422."
-    ),
-)
 def test_occurred_at_without_timezone_is_rejected(
     client: TestClient, create_lead: Callable[..., dict[str, Any]]
 ) -> None:
     lead = create_lead()
     resp = _log_activity(client, lead["id"], occurred_at="2026-11-26T18:30:00")
     assert resp.status_code == 422
+    assert resp.json()["errors"][0]["field"] == "body.occurred_at"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Open point (Section 8.5): occurred_at in the future is not validated.",
-)
 def test_occurred_at_in_the_future_is_rejected(
     client: TestClient, create_lead: Callable[..., dict[str, Any]]
 ) -> None:
@@ -240,6 +229,17 @@ def test_occurred_at_in_the_future_is_rejected(
     future = (datetime.now(UTC) + timedelta(days=30)).isoformat().replace("+00:00", "Z")
     resp = _log_activity(client, lead["id"], occurred_at=future)
     assert resp.status_code == 422
+    assert resp.json()["errors"][0]["field"] == "body.occurred_at"
+
+
+def test_occurred_at_slightly_ahead_of_server_clock_is_accepted(
+    client: TestClient, create_lead: Callable[..., dict[str, Any]]
+) -> None:
+    # A client device clock running 1 minute fast must not block a real activity.
+    lead = create_lead()
+    ahead = (datetime.now(UTC) + timedelta(minutes=1)).isoformat().replace("+00:00", "Z")
+    resp = _log_activity(client, lead["id"], occurred_at=ahead)
+    assert resp.status_code == 201
 
 
 @pytest.mark.xfail(

@@ -19,7 +19,7 @@ Backend service implementation for **Keyloop Engineering Manager Technical Asses
 ```text
 .
 ├── SYSTEM_DESIGN.md                     # System Design Document (v1.0.0)
-├── TEST_SPEC.md                         # Formal Test Specification & Traceability Matrix (124 cases)
+├── TEST_SPEC.md                         # Formal Test Specification & Traceability Matrix (125 cases)
 ├── .env.example                         # Environment variables template
 ├── pyproject.toml                     # Python 3.12+ & Pytest configuration
 ├── requirements.txt                   # Runtime & testing dependencies
@@ -90,7 +90,7 @@ Interactive OpenAPI 3.1 / Swagger UI is available at:
 pytest
 ```
 
-See [TEST_SPEC.md](TEST_SPEC.md) for the formal Test Specification & Requirement Traceability Matrix covering all 124 test cases (`TC-BL-01` through `TC-EDGE-20`). Expected result: 121 passed, 3 xfailed. The 3 xfail tests are known gaps listed in Section 8.5 of the design document.
+See [TEST_SPEC.md](TEST_SPEC.md) for the formal Test Specification & Requirement Traceability Matrix covering all 125 test cases (`TC-BL-01` through `TC-EDGE-21`). Expected result: 124 passed, 1 xfailed. The xfail test is a known gap listed in Section 8.5 of the design document.
 
 ---
 
@@ -240,7 +240,7 @@ The work was spec-first. I reworked Gemini's first blueprint before any code was
 
 ### 2. How the output was verified and refined
 
-- **Automated tests:** Antigravity generated 50 pytest cases covering lifecycle rules, API contracts, tenant isolation, optimistic locking, and zero-PII logging ([TEST_SPEC.md](TEST_SPEC.md)). I later added 74 edge-case tests with Claude ([tests/test_edge_cases.py](tests/test_edge_cases.py)), 3 of them marked xfail as known gaps. I re-ran the full suite myself: 121 pass, 3 xfail.
+- **Automated tests:** Antigravity generated 50 pytest cases covering lifecycle rules, API contracts, tenant isolation, optimistic locking, and zero-PII logging ([TEST_SPEC.md](TEST_SPEC.md)). I later added 74 edge-case tests with Claude ([tests/test_edge_cases.py](tests/test_edge_cases.py)), 3 of them marked xfail as known gaps in `occurred_at` handling. Two of those gaps were then fixed (a time without a time zone, and a time in the future, now return `422`), with one more test for the clock allowance. The third is left open as a product decision. I re-ran the full suite myself: 124 pass, 1 xfail.
 - **Manual testing:** I tested the main flows in Swagger UI: creating a lead, retrieving a lead with its activities, and logging follow-up activities.
 - **Middleware ordering:** Starlette middleware unwinds in reverse order, so the tenant middleware would clear its context variable before the access log is written. The access log reads the dealership from `request.state` instead, and a regression test in [tests/test_observability_and_errors.py](tests/test_observability_and_errors.py) checks it.
 - **Cross-model review:** a review with Claude found that the design document had drifted from the code (the status diagram showed fewer transitions than the code allows, and Alembic was described but not used), and that an earlier version of this README overstated the process. Both documents were corrected.
@@ -249,4 +249,4 @@ The work was spec-first. I reworked Gemini's first blueprint before any code was
 
 - When one agent writes both the code and the tests, the tests can share the code's blind spots. My manual testing covered the main paths, not every edge case.
 - Performance targets have not been load-tested, and the PostgreSQL profile has had less testing than SQLite.
-- Open items for production (token-based identity, `Idempotency-Key`, `occurred_at` validation and time zones, retry on concurrent activity logging) are listed in Section 8 of the design document.
+- Open items for production (token-based identity, `Idempotency-Key`, `occurred_at` before lead creation, retry on concurrent activity logging) are listed in Section 8 of the design document.

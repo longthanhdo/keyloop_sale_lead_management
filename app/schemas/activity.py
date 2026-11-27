@@ -1,9 +1,18 @@
+from datetime import UTC, datetime, timedelta
+from typing import Annotated
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AfterValidator, AwareDatetime, BaseModel, ConfigDict, Field, field_validator
 
 from app.core.enums import ActivityType, LeadStatus
-from app.schemas.common import PaginationMeta, UTCDatetime
+from app.schemas.common import PaginationMeta, UTCDatetime, _ensure_utc
+
+# Allowance for clocks on client devices running slightly ahead of the server.
+MAX_FUTURE_SKEW = timedelta(minutes=5)
+
+# Input-only type: rejects a datetime without a time zone (422), then converts to UTC.
+# Kept separate from UTCDatetime, which is also used when reading stored values.
+AwareUTCDatetime = Annotated[AwareDatetime, AfterValidator(_ensure_utc)]
 
 
 class ActivityCreate(BaseModel):
@@ -14,7 +23,7 @@ class ActivityCreate(BaseModel):
     notes: str | None = None
     performed_by: str = Field(..., min_length=1, max_length=150)
     outcome: str | None = Field(default=None, max_length=100)
-    occurred_at: UTCDatetime | None = None
+    occurred_at: AwareUTCDatetime | None = None
     new_lead_status: LeadStatus | None = None
 
     @field_validator("outcome", "notes", mode="before")
@@ -22,6 +31,13 @@ class ActivityCreate(BaseModel):
     def _empty_string_to_none(cls, value: str | None) -> str | None:
         if isinstance(value, str) and not value.strip():
             return None
+        return value
+
+    @field_validator("occurred_at")
+    @classmethod
+    def _reject_future_occurred_at(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value > datetime.now(UTC) + MAX_FUTURE_SKEW:
+            raise ValueError("occurred_at cannot be in the future")
         return value
 
 
