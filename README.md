@@ -19,7 +19,7 @@ Backend service implementation for **Keyloop Engineering Manager Technical Asses
 ```text
 .
 ├── SYSTEM_DESIGN.md                     # System Design Document (v1.0.0)
-├── TEST_SPEC.md                         # Formal Test Specification & Traceability Matrix (50 cases)
+├── TEST_SPEC.md                         # Formal Test Specification & Traceability Matrix (124 cases)
 ├── .env.example                         # Environment variables template
 ├── pyproject.toml                     # Python 3.12+ & Pytest configuration
 ├── requirements.txt                   # Runtime & testing dependencies
@@ -43,7 +43,8 @@ Backend service implementation for **Keyloop Engineering Manager Technical Asses
     ├── test_health.py                   # Liveness & readiness (200 / 503) tests
     ├── test_leads_api.py                # Inbox filters/sort/pagination, CRUD, 404/409/422
     ├── test_activities_api.py           # Chronology asc/desc, auto-transitions, NOTE, retroactive
-    └── test_observability_and_errors.py # Correlation ID, RFC 7807, zero-PII logs, tenancy
+    ├── test_observability_and_errors.py # Correlation ID, RFC 7807, zero-PII logs, tenancy
+    └── test_edge_cases.py               # Full transition matrix, isolation, soft delete, dates, inbox inputs
 ```
 
 ---
@@ -89,7 +90,7 @@ Interactive OpenAPI 3.1 / Swagger UI is available at:
 pytest
 ```
 
-See [TEST_SPEC.md](TEST_SPEC.md) for the formal Test Specification & Requirement Traceability Matrix covering all 50 test cases (`TC-BL-01` through `TC-OBS-04`).
+See [TEST_SPEC.md](TEST_SPEC.md) for the formal Test Specification & Requirement Traceability Matrix covering all 124 test cases (`TC-BL-01` through `TC-EDGE-20`). Expected result: 121 passed, 3 xfailed. The 3 xfail tests are known gaps listed in Section 8.5 of the design document.
 
 ---
 
@@ -225,66 +226,27 @@ curl -i "http://127.0.0.1:8000/api/v1/leads/8f14e45f-ea9a-4c6e-9b2a-1d3c4b5a6e7f
 
 ## AI Collaboration Narrative
 
-In alignment with Engineering Management best practices, Generative AI was used throughout this assessment as a **force-multiplying pair programmer and scaffolding accelerator**, operating under strict architectural governance, explicit domain constraints, and human-led verification. Every architectural boundary, data invariant, and operational guardrail was defined upfront and verified empirically before acceptance.
+AI was used throughout this assessment. The full account, including what I changed, how I verified the output and what is still open, is in [Section 8 of SYSTEM_DESIGN.md](SYSTEM_DESIGN.md#8-genai-usage). In summary:
 
-### 1. High-Level Strategy for Guiding the AI
+### 1. How I guided the AI
 
-Rather than issuing open-ended prompts (e.g., *"build a lead management API"*), the implementation followed a **Spec-Driven, Contract-First workflow** anchored to [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md) (`v1.0.0`):
+| Tool | Used for |
+|---|---|
+| **Gemini** (chat) | Domain research, structuring the design document, a first draft of assumptions, data model and API contracts, and delivery planning. |
+| **Google Antigravity** | Implementing the service from `SYSTEM_DESIGN.md`: FastAPI layers, the pytest suite, seed data, Docker setup, and a first draft of this README. |
+| **Claude** | Cross-model review of the finished design and code. |
 
-1. **Blueprint-First Constraint Setting**: Before generating any application code, the System Design Document locked down the target architecture (**Layered Modular Monolith**), Entity-Relationship schema, composite indexing strategy, Lead lifecycle state machine, and exact JSON/RFC 7807 wire contracts. The AI was instructed to treat `SYSTEM_DESIGN.md` as an immutable specification.
-2. **Phased, Bottom-Up Layer Decomposition**: Work was sequenced strictly along dependency boundaries to prevent leaky abstractions:
-   - *Phase 1 — Core & Cross-Cutting Infrastructure*: Configuration (`pydantic-settings`), domain enums/transition tables, domain exceptions, RFC 7807 handlers, and structured JSON logging.
-   - *Phase 2 — Persistence & Data Contracts*: SQLAlchemy 2.0 `Mapped[]` models, dialect-portable custom types, composite indexes, and Pydantic v2 request/response DTOs.
-   - *Phase 3 — Repositories, Domain Services & HTTP Middleware/Routers*: Encapsulating SQL queries (`selectinload`, conditional optimistic updates) away from business rules and HTTP transport.
-   - *Phase 4 — Seed Tooling, Containerization & Verification Suite*: Deterministic automotive seed data, Docker/PostgreSQL 16 parity setup, and comprehensive Pytest suites.
-3. **Explicit Guardrail Injection**: Non-negotiable production standards were specified directly in prompts—mandating `PRAGMA foreign_keys = ON;` on SQLite connections, single-transaction Unit of Work semantics for activity logging, `X-Correlation-ID` propagation via `contextvars`, multi-tenant scoping via `X-Dealer-ID`, and strict GDPR PII exclusion from stdout logs.
+The work was spec-first. I reworked Gemini's first blueprint before any code was written: dual activity timestamps (`occurred_at` and `created_at`), `dealership_id` on every table, a fuller lead lifecycle, and optimistic locking. Antigravity proposed FastAPI instead of Gemini's Next.js suggestion, and I accepted it for a backend-only submission. The finished `SYSTEM_DESIGN.md` was then the specification Antigravity built against.
 
-**Representative Prompting Pattern Used:**
+### 2. How the output was verified and refined
 
-```text
-Role & Context:
-  Act as a Senior Python Backend Engineer implementing Scenario C (Demand Domain)
-  strictly against SYSTEM_DESIGN.md (v1.0.0) on Python 3.12+, FastAPI, Pydantic v2,
-  and SQLAlchemy 2.0.
+- **Automated tests:** Antigravity generated 50 pytest cases covering lifecycle rules, API contracts, tenant isolation, optimistic locking, and zero-PII logging ([TEST_SPEC.md](TEST_SPEC.md)). I later added 74 edge-case tests with Claude ([tests/test_edge_cases.py](tests/test_edge_cases.py)), 3 of them marked xfail as known gaps. I re-ran the full suite myself: 121 pass, 3 xfail.
+- **Manual testing:** I tested the main flows in Swagger UI: creating a lead, retrieving a lead with its activities, and logging follow-up activities.
+- **Middleware ordering:** Starlette middleware unwinds in reverse order, so the tenant middleware would clear its context variable before the access log is written. The access log reads the dealership from `request.state` instead, and a regression test in [tests/test_observability_and_errors.py](tests/test_observability_and_errors.py) checks it.
+- **Cross-model review:** a review with Claude found that the design document had drifted from the code (the status diagram showed fewer transitions than the code allows, and Alembic was described but not used), and that an earlier version of this README overstated the process. Both documents were corrected.
 
-Architecture & Guardrails:
-  - Layered Modular Monolith: isolate routers, schemas, services, repositories, ORM models, middleware.
-  - DB Parity: compatible with SQLite & PostgreSQL 16; enforce PRAGMA foreign_keys = ON per SQLite connection;
-    prevent N+1 queries on Lead Details via selectinload().
-  - Atomicity & Concurrency: POST /leads/{id}/activities must insert the activity and update
-    last_contacted_at, status, updated_at, and version inside a single DB transaction; enforce optimistic
-    locking (version) on PATCH /leads/{id}; NOTE must not mutate last_contacted_at or force status changes.
-  - Observability & Errors: RFC 7807 (application/problem+json) for 400/404/409/422/500/503; propagate
-    X-Correlation-ID; emit structured JSON logs strictly excluding PII (email, phone, names, free-text notes).
-```
+### 3. Known limits
 
-### 2. Process for Verifying and Refining AI Output
-
-All AI-generated code underwent line-by-line architectural review and live runtime inspection. Several subtle framework interactions and domain edge cases were identified, refined, or overridden during development:
-
-- **Middleware Execution Order & `contextvars` Lifecycle Fix**:
-  - *Finding*: During live smoke testing of structured stdout logs, `http.request.completed` access log entries initially emitted `"dealership_id": null` even when a valid tenant was resolved.
-  - *Root Cause & Refinement*: Because Starlette middleware executes in LIFO order (`CorrelationIDMiddleware` -> `AccessLogMiddleware` -> `TenantContextMiddleware`), `TenantContextMiddleware` was resetting its `dealership_id_ctx` `ContextVar` in its `finally` block *before* control unwound back to `AccessLogMiddleware`. We refined `AccessLogMiddleware` ([app/middleware/access_log.py](app/middleware/access_log.py)) to read `request.state.dealership_id` directly on unwind and added an explicit regression assertion in [tests/test_observability_and_errors.py](tests/test_observability_and_errors.py) verifying non-null `dealership_id` across both domain and access log events.
-- **SQLite ↔ PostgreSQL 16 Timestamp & Foreign-Key Parity**:
-  - *Refinement*: Standard SQLAlchemy `DateTime(timezone=True)` returns naive datetimes on SQLite and can produce inconsistent lexicographical `ORDER BY` behavior if mixed offsets are stored. Rather than accepting dialect drift, we implemented a custom `UTCDateTime(TypeDecorator)` ([app/db/base.py](app/db/base.py)) that normalizes all persisted timestamps to UTC (naive ISO UTC in SQLite, `TIMESTAMPTZ` in PostgreSQL) and re-attaches `tzinfo=UTC` on load, paired with a Pydantic v2 `UTCDatetime` serializer outputting strict `Z`-suffixed ISO-8601 strings. SQLite's default-off foreign key enforcement was closed via a SQLAlchemy `connect` event hook (`PRAGMA foreign_keys = ON;`) and verified via dedicated test assertion.
-- **Atomic Optimistic Concurrency & SQLAlchemy Identity Map Safety**:
-  - *Refinement*: Naive read-modify-write ORM updates are vulnerable to lost updates when two sales executives edit the same lead simultaneously. We enforced an atomic SQL `UPDATE leads ... SET version = version + 1 WHERE id = :id AND version = :expected_version` check (`rowcount == 1`). Because `sessionmaker` uses `expire_on_commit=False`, we ensured explicit `session.refresh(lead)` calls post-commit in `LeadService` and `ActivityService` so serialized responses never serve stale in-memory ORM attributes.
-- **Automotive Domain Edge Cases (Retroactive Logging & Terminal States)**:
-  - *Refinement*: Sales executives frequently log phone calls retroactively after leaving the showroom floor. We refined `ActivityService._resolve_last_contacted_at` ([app/services/activity_service.py](app/services/activity_service.py)) to compute `max(current_last_contacted_at, occurred_at)` for outreach types so logging an earlier historical call never regresses `last_contacted_at` backwards, ensured internal `NOTE` entries leave `last_contacted_at` and `status` untouched, and protected terminal states (`CONVERTED`, `LOST`) from accidental status regression during post-sale handover logging.
-- **Rejected Premature Infrastructure Complexity**:
-  - *Override*: Consistent with the Stage 1 MVP scope in `SYSTEM_DESIGN.md`, suggestions to introduce Redis, Celery, or separate microservices were intentionally declined in favor of strong relational ACID guarantees within a clean modular monolith that preserves clear extraction seams for Stage 2/3 scale.
-
-### 3. How Final Code Quality Was Ensured
-
-Final readiness was validated through multiple independent quality gates:
-
-1. **Automated Domain & API Contract Test Suite (`50 passed` in Pytest)**:
-   - **Direct Business Logic & Service Unit Tests**: Exhaustive state-machine transition matrices (`validate_status_transition`), status non-regression rules on advanced/terminal leads, monotonic `last_contacted_at` resolution, partial `PATCH` field-set semantics (`model_fields_set`), and SQLAlchemy query-counter verification proving `get_lead_detail` executes strictly 2 `SELECT` queries regardless of activity volume ([tests/test_business_logic.py](tests/test_business_logic.py)).
-   - **Per-Test Isolation**: Every test runs against a fresh in-memory SQLite database (`StaticPool` with foreign keys enabled) via composable FastAPI `TestClient` fixtures ([tests/conftest.py](tests/conftest.py)).
-   - **Lifecycle & Rollback Coverage**: Parametrized tests verify automatic `NEW -> CONTACTED` transitions across all 5 outreach types (`CALL`, `EMAIL`, `SMS`, `QUOTE_SENT`, `MEETING`), `TEST_DRIVE_SCHEDULED` progression, `NOTE` invariance, `asc`/`desc` chronological ordering with retroactive `occurred_at`, and full transaction rollback when an invalid `new_lead_status` override (`409`) is rejected ([tests/test_activities_api.py](tests/test_activities_api.py)).
-   - **Multi-Tenant, Concurrency & Validation Guardrails**: Dedicated tests verify cross-dealership `404` isolation (`X-Dealer-ID`), soft-delete exclusion (`deleted_at IS NULL`), `409` optimistic lock conflicts on stale `version`, `422` validation error arrays, `400` malformed JSON/header handling, `503` degraded readiness probes, and sanitized `500` responses ([tests/test_leads_api.py](tests/test_leads_api.py), [tests/test_health.py](tests/test_health.py)).
-   - **Zero-PII Observability Audit**: Automated log-capture tests parse emitted stdout JSON lines to verify envelope completeness (`timestamp`, `level`, `logger`, `event`, `correlation_id`, `dealership_id`) and assert that customer `email`, `phone`, `first_name`, `last_name`, and free-text `notes` never appear in application logs ([tests/test_observability_and_errors.py](tests/test_observability_and_errors.py)).
-2. **Query Performance & Schema Integrity**:
-   - Audited ORM data access to confirm `GET /api/v1/leads/{lead_id}` uses `selectinload(Lead.activities)` (bounded to 2 SQL queries regardless of activity volume, eliminating N+1 queries) and that database `CHECK` constraints and composite indexes match Section 4 of the System Design Document.
-3. **Operational & End-to-End Smoke Verification**:
-   - Executed idempotent seeding (`python -m scripts.seed --reset` followed by repeat runs), performed live interactive testing through Swagger UI (`/docs`) creating and inspecting persisted leads directly in `keyloop_leads.db`, and packaged non-root Docker + Docker Compose configurations supporting both zero-dependency SQLite and production-parity PostgreSQL 16.
+- When one agent writes both the code and the tests, the tests can share the code's blind spots. My manual testing covered the main paths, not every edge case.
+- Performance targets have not been load-tested, and the PostgreSQL profile has had less testing than SQLite.
+- Open items for production (token-based identity, `Idempotency-Key`, `occurred_at` validation and time zones, retry on concurrent activity logging) are listed in Section 8 of the design document.

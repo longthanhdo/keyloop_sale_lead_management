@@ -7,7 +7,8 @@
 | **Version** | 1.0.0 |
 | **Companion Blueprint** | [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md) (`v1.0.0`) |
 | **Test Framework** | Python 3.12+, Pytest 8.x, FastAPI `TestClient` / HTTPX, SQLAlchemy 2.0 |
-| **Total Automated Cases** | **50** (`25` Domain/Service Unit Tests + `25` End-to-End API Integration Tests) |
+| **Total Automated Cases** | **124** (`50` original cases: `25` Domain/Service Unit Tests + `25` End-to-End API Integration Tests; plus `74` edge-case tests in Suite F) |
+| **Expected Result** | `121` passed, `3` xfailed (known gaps, see Suite F) |
 
 ---
 
@@ -22,6 +23,8 @@ To guarantee production-grade reliability without brittle external dependencies,
    - Directly exercises `validate_status_transition`, `ActivityService` resolution helpers, `LeadService` partial-update semantics, and SQLAlchemy `before_cursor_execute` query-counting hooks without HTTP transport overhead.
 3. **Tier 2 — HTTP API Integration, Transaction & Observability Suite (`25 cases` across 4 modules)**:
    - Exercises the full ASGI stack (`CorrelationIDMiddleware` → `AccessLogMiddleware` → `TenantContextMiddleware` → RFC 7807 Exception Handlers → Routers → Services → Repositories → SQLite) to validate wire contracts, ACID rollbacks, multi-tenant isolation, and GDPR zero-PII logging.
+4. **Edge-Case Suite (`tests/test_edge_cases.py` — 74 cases)**:
+   - Mixes unit and API tests. Covers the full status transition matrix, dealership isolation and soft deletion on every lead endpoint, `occurred_at` time zones, `PATCH` edge cases, and Lead Inbox input edge cases. 3 tests are marked `xfail` as known gaps (Suite F).
 
 ---
 
@@ -42,6 +45,11 @@ To guarantee production-grade reliability without brittle external dependencies,
 | Liveness (`/health/live`), Readiness (`/health/ready` `200`/`503`) & SQLite FK enforcement | §4.2, §7.2 | `TC-HLTH-01`..`TC-HLTH-04` |
 | RFC 7807 (`application/problem+json`) across `400`, `404`, `409`, `422`, `500`, `503` | §5.3.5, §5.4, §7.3 | `TC-LEAD-03`..`TC-LEAD-06`, `TC-ACT-09`, `TC-ACT-11`, `TC-HLTH-03`, `TC-OBS-01`..`TC-OBS-03` |
 | `X-Correlation-ID` propagation & structured JSON logging with strict zero-PII scrubbing | §7.1 | `TC-OBS-01`, `TC-OBS-04` |
+| Full status transition matrix (all 49 pairs) & `STATUS_CHANGE` never auto-transitions | §2.1 | `TC-EDGE-01`..`TC-EDGE-03` |
+| Dealership isolation & soft-delete exclusion on every lead endpoint | §2.4, §2.5 | `TC-EDGE-04`..`TC-EDGE-09` |
+| `occurred_at` time zone handling & validation (3 known gaps marked xfail) | §2.5, §8.5 | `TC-EDGE-10`..`TC-EDGE-13` |
+| `PATCH` version and same-status/backward-transition edge cases | §2.1, §4.2 | `TC-EDGE-14`..`TC-EDGE-17` |
+| Lead Inbox out-of-range pages, invalid query parameters & literal wildcard search | §5.3.1 | `TC-EDGE-18`..`TC-EDGE-20` |
 
 ---
 
@@ -130,6 +138,37 @@ To guarantee production-grade reliability without brittle external dependencies,
 | `TC-OBS-03` | `test_unhandled_500_returns_sanitized_rfc7807` | Test route raising `RuntimeError("Sensitive internal DB password leaked here")`. | `GET /_test/crash` with `X-Correlation-ID: crash-corr-1`. | `500 Internal Server Error` (`application/problem+json`) containing `correlation_id="crash-corr-1"` and sanitized `detail` (zero stack trace or password leakage). |
 | `TC-OBS-04` | `test_structured_json_logs_contain_envelope_and_exclude_all_pii` | `JsonFormatter` stream handler attached to root logger. | Create lead with sensitive `first_name`, `last_name`, `email`, `phone`, `enquiry_notes`, then log `CALL` activity with sensitive `notes`. | Emits valid single-line JSON logs for `lead.created`, `activity.logged`, and `http.request.completed` containing `timestamp`, `level`, `logger`, `event`, `correlation_id`, and non-null `dealership_id`; **zero PII strings appear anywhere in raw log output**. |
 
+### 3.6 Suite F — Edge Cases (`tests/test_edge_cases.py`)
+
+These tests were added after a review of this specification found gaps in the original suite: most status transition pairs were untested, dealership isolation and soft deletion were checked on only some endpoints, and several input edge cases had no coverage.
+
+Three tests are marked `xfail(strict=True)`. They document known open points (SYSTEM_DESIGN.md, Section 8.5) and are expected to fail today. Because they are strict, a test that starts passing fails the suite until its marker is removed.
+
+| Test ID | Pytest Function | Cases | Inputs / Action | Expected Result |
+| :--- | :--- | :---: | :--- | :--- |
+| `TC-EDGE-01` | `test_every_status_transition_matches_the_design[<from>-><to>]` | 49 | `validate_status_transition` for every pair of the 7 statuses. | Allowed pairs (and same-status no-ops) succeed; every other pair raises `InvalidStatusTransitionError`. Matches the transition table in SYSTEM_DESIGN.md Section 2.1. |
+| `TC-EDGE-02` | `test_status_change_activity_never_auto_transitions` | 1 | `ActivityService._resolve_next_status` with `STATUS_CHANGE` and no override, for every status. | Returns the current status unchanged. |
+| `TC-EDGE-03` | `test_status_change_activity_via_api_keeps_new_lead_new` | 1 | `POST .../activities` with `activity_type="STATUS_CHANGE"` on a `NEW` lead. | `201 Created`; `status` stays `NEW`, `last_contacted_at` stays `null`. |
+| `TC-EDGE-04` | `test_patch_lead_from_other_dealership_returns_404_and_changes_nothing` | 1 | `PATCH /api/v1/leads/{id}` with another dealership's `X-Dealer-ID`. | `404 Not Found` (`application/problem+json`); lead unchanged (`status="NEW"`, `version=1`). |
+| `TC-EDGE-05` | `test_activity_feed_from_other_dealership_returns_404` | 1 | `GET /api/v1/leads/{id}/activities` with another dealership's `X-Dealer-ID`. | `404 Not Found` (`application/problem+json`). |
+| `TC-EDGE-06` | `test_inbox_of_other_dealership_does_not_show_lead` | 1 | `GET /api/v1/leads` with another dealership's `X-Dealer-ID`. | `200 OK`; empty `items`, `total_items=0`. |
+| `TC-EDGE-07` | `test_soft_deleted_lead_cannot_be_patched` | 1 | Soft-delete a lead, then `PATCH` it. | `404 Not Found`. |
+| `TC-EDGE-08` | `test_soft_deleted_lead_cannot_receive_activities` | 1 | Soft-delete a lead, then `POST .../activities`. | `404 Not Found`. |
+| `TC-EDGE-09` | `test_soft_deleted_lead_activity_feed_returns_404` | 1 | Log an activity, soft-delete the lead, then `GET .../activities`. | `404 Not Found`. |
+| `TC-EDGE-10` | `test_occurred_at_with_timezone_offset_is_converted_to_utc` | 1 | Log an activity with `occurred_at="2026-11-26T18:30:00+07:00"`. | `201 Created`; `occurred_at` and `last_contacted_at` are `"2026-11-26T11:30:00Z"`. |
+| `TC-EDGE-11` | `test_occurred_at_without_timezone_is_rejected` | 1 | Log an activity with `occurred_at="2026-11-26T18:30:00"` (no time zone). | **xfail (known gap).** Expected `422`. Today the time is silently treated as UTC. |
+| `TC-EDGE-12` | `test_occurred_at_in_the_future_is_rejected` | 1 | Log an activity with `occurred_at` 30 days in the future. | **xfail (known gap).** Expected `422`. Today it is accepted. |
+| `TC-EDGE-13` | `test_occurred_at_before_lead_creation_is_rejected` | 1 | Log an activity with `occurred_at="2000-01-01T09:00:00Z"`. | **xfail (known gap).** Expected `422`. Today it is accepted. |
+| `TC-EDGE-14` | `test_patch_without_version_returns_422` | 1 | `PATCH` with no `version` field. | `422 Unprocessable Entity` (`application/problem+json`). |
+| `TC-EDGE-15` | `test_patch_with_version_ahead_of_current_returns_409` | 1 | `PATCH` with `version=99` on a lead at `version=1`. | `409 Conflict`; lead unchanged. |
+| `TC-EDGE-16` | `test_patch_to_same_status_is_accepted_and_keeps_status` | 1 | `PATCH` a `NEW` lead with `status="NEW"`. | `200 OK`; `status="NEW"`. |
+| `TC-EDGE-17` | `test_patch_backward_transition_via_api_returns_409` | 1 | `PATCH` `NEW -> QUALIFIED`, then `QUALIFIED -> CONTACTED`. | First `200 OK`; second `409 Conflict` (`type=.../invalid-status-transition`). |
+| `TC-EDGE-18` | `test_inbox_page_beyond_last_returns_empty_list` | 1 | `GET /api/v1/leads?page=5&page_size=20` with 1 lead. | `200 OK`; empty `items`, `total_items=1`, `has_next=false`. |
+| `TC-EDGE-19` | `test_inbox_invalid_query_parameters_return_422[<query>]` | 4 | `page=0`, `page_size=0`, `sort_by=bogus_field`, `sort_order=sideways`. | `422 Unprocessable Entity` (`application/problem+json`). |
+| `TC-EDGE-20` | `test_inbox_search_treats_sql_wildcards_as_literal_text[<wildcard>]` | 4 | `search` of `%`, `_`, `%%`, `__` with 1 lead that contains none of them. | `200 OK`; `total_items=0` (wildcards are matched as plain text). |
+
+**Suite F total:** 74 cases (71 pass, 3 xfail).
+
 ---
 
 ## 4. Test Execution Reference
@@ -137,10 +176,10 @@ To guarantee production-grade reliability without brittle external dependencies,
 Run from the repository root (`/Users/dothanhlong/Documents/Keyloop`):
 
 ```bash
-# Execute all 50 automated test cases
+# Execute all 124 automated test cases (expected: 121 passed, 3 xfailed)
 .venv/bin/pytest
 
-# List all 50 collected test cases without executing
+# List all 124 collected test cases without executing
 .venv/bin/pytest --collect-only -q
 
 # Execute individual suites
@@ -149,4 +188,5 @@ Run from the repository root (`/Users/dothanhlong/Documents/Keyloop`):
 .venv/bin/pytest tests/test_activities_api.py
 .venv/bin/pytest tests/test_health.py
 .venv/bin/pytest tests/test_observability_and_errors.py
+.venv/bin/pytest tests/test_edge_cases.py
 ```
