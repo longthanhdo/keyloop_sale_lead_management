@@ -459,7 +459,7 @@ Indexes are designed strictly around the application's primary read/write access
 }
 ```
 
-*(Note: `occurred_at`, `notes`, `outcome`, and `new_lead_status` are optional. If `occurred_at` is omitted, the server assigns current UTC time. If `new_lead_status` is omitted, automatic transition rules from Section 2.1 apply.)*
+*(Note: `occurred_at`, `notes`, `outcome`, and `new_lead_status` are optional. If `occurred_at` is omitted, the server assigns current UTC time. If it is given, it must include a time zone (`Z` or an offset such as `+07:00`) and must not be more than 5 minutes in the future; otherwise the request returns `422`. If `new_lead_status` is omitted, automatic transition rules from Section 2.1 apply.)*
 
 **Sample Response (`201 Created`)**:
 ```json
@@ -548,7 +548,7 @@ Returns the created Lead resource with `status: "NEW"` and `last_contacted_at: n
 | `400 Bad Request` | Malformed Request | Malformed JSON syntax or invalid UUID/header format. |
 | `404 Not Found` | Resource Missing | Target `lead_id` does not exist, is soft-deleted, or belongs to another dealership. |
 | `409 Conflict` | State / Concurrency Conflict | Optimistic lock `version` mismatch or invalid business state transition. |
-| `422 Unprocessable Entity` | Semantic Validation Error | Invalid enum value, invalid email, out-of-range pagination parameter. |
+| `422 Unprocessable Entity` | Semantic Validation Error | Invalid enum value, invalid email, out-of-range pagination parameter, `occurred_at` without a time zone or in the future. |
 | `500 Internal Server Error` | Unexpected Fault | Unhandled exception (sanitized response; full stack trace logged internally with `correlation_id`). |
 | `503 Service Unavailable` | Dependency Unhealthy | `/health/ready` fails database connectivity check. |
 
@@ -630,7 +630,7 @@ Gemini's first blueprint for Scenario C was a sound starting point. I kept its c
 
 ### 8.3 How I Verified the Output
 
-- **Automated tests:** Antigravity generated 50 pytest cases covering lifecycle rules, API contracts, dealership isolation, optimistic locking and zero-PII logging ([TEST_SPEC.md](TEST_SPEC.md)). I later added 74 edge-case tests with Claude, 3 of them marked xfail as known gaps. I re-ran the full suite myself: 121 pass, 3 xfail.
+- **Automated tests:** Antigravity generated 50 pytest cases covering lifecycle rules, API contracts, dealership isolation, optimistic locking and zero-PII logging ([TEST_SPEC.md](TEST_SPEC.md)). I later added 74 edge-case tests with Claude, 3 of them marked xfail as known gaps in `occurred_at` handling. Two of those gaps were then fixed (see 8.5), with one more test for the clock allowance. I re-ran the full suite myself: 124 pass, 1 xfail.
 - **Manual testing:** I tested the main flows by hand in Swagger UI: creating a lead, retrieving a lead with its activities, and logging follow-up activities.
 - **Cross-model review:** I had a different model (Claude) review the design document against the code (see 8.4).
 - **Limits:** my manual testing covered the main paths, not every edge case. When one agent writes both the code and the tests, the tests can share the code's blind spots. Performance targets have not been load-tested, and the PostgreSQL profile has had less testing than SQLite.
@@ -649,8 +649,9 @@ One detail worth noting in the code: Starlette middleware unwinds in reverse ord
 ### 8.5 Known Open Points
 
 - Two users logging activities on the same lead at the same time: the second receives a `409`, although the actions don't really conflict. A server-side retry would fix this.
-- `occurred_at` is not validated. An activity can be dated in the future or before the lead was created.
-- An `occurred_at` without a time zone (for example `2026-11-26T18:30:00`) is silently treated as UTC. A client that sends local time would have the activity stored hours off. Rejecting it with `422` would fix this.
+- An activity can be dated before the lead was created. This is left open on purpose: a sales executive often takes a call first and creates the lead afterwards, so a strict check would reject real activity. The options are a limit (for example, no more than N days before the lead) or a warning instead of an error. This is a product decision.
+- Fixed: an `occurred_at` without a time zone (for example `2026-11-26T18:30:00`) used to be silently treated as UTC, so a client sending local time would have the activity stored hours off. It now returns `422`.
+- Fixed: an `occurred_at` in the future used to be accepted. It now returns `422` if it is more than 5 minutes ahead of the server clock. The 5 minutes allow for client devices whose clocks run slightly fast.
 - `Idempotency-Key` is listed in the API contract but not implemented in the MVP.
 - `performed_by` comes from the request body, and the dealership from the `X-Dealer-ID` header. In production, both must come from the authenticated user's token.
 - There is no index on `assigned_to` for a sales executive's "my leads" view.

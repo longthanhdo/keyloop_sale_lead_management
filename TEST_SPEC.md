@@ -7,8 +7,8 @@
 | **Version** | 1.0.0 |
 | **Companion Blueprint** | [SYSTEM_DESIGN.md](SYSTEM_DESIGN.md) (`v1.0.0`) |
 | **Test Framework** | Python 3.12+, Pytest 8.x, FastAPI `TestClient` / HTTPX, SQLAlchemy 2.0 |
-| **Total Automated Cases** | **124** (`50` original cases: `25` Domain/Service Unit Tests + `25` End-to-End API Integration Tests; plus `74` edge-case tests in Suite F) |
-| **Expected Result** | `121` passed, `3` xfailed (known gaps, see Suite F) |
+| **Total Automated Cases** | **125** (`50` original cases: `25` Domain/Service Unit Tests + `25` End-to-End API Integration Tests; plus `75` edge-case tests in Suite F) |
+| **Expected Result** | `124` passed, `1` xfailed (known gap, see Suite F) |
 
 ---
 
@@ -23,8 +23,8 @@ To guarantee production-grade reliability without brittle external dependencies,
    - Directly exercises `validate_status_transition`, `ActivityService` resolution helpers, `LeadService` partial-update semantics, and SQLAlchemy `before_cursor_execute` query-counting hooks without HTTP transport overhead.
 3. **Tier 2 — HTTP API Integration, Transaction & Observability Suite (`25 cases` across 4 modules)**:
    - Exercises the full ASGI stack (`CorrelationIDMiddleware` → `AccessLogMiddleware` → `TenantContextMiddleware` → RFC 7807 Exception Handlers → Routers → Services → Repositories → SQLite) to validate wire contracts, ACID rollbacks, multi-tenant isolation, and GDPR zero-PII logging.
-4. **Edge-Case Suite (`tests/test_edge_cases.py` — 74 cases)**:
-   - Mixes unit and API tests. Covers the full status transition matrix, dealership isolation and soft deletion on every lead endpoint, `occurred_at` time zones, `PATCH` edge cases, and Lead Inbox input edge cases. 3 tests are marked `xfail` as known gaps (Suite F).
+4. **Edge-Case Suite (`tests/test_edge_cases.py` — 75 cases)**:
+   - Mixes unit and API tests. Covers the full status transition matrix, dealership isolation and soft deletion on every lead endpoint, `occurred_at` time zones and validation, `PATCH` edge cases, and Lead Inbox input edge cases. 1 test is marked `xfail` as a known gap (Suite F).
 
 ---
 
@@ -47,7 +47,7 @@ To guarantee production-grade reliability without brittle external dependencies,
 | `X-Correlation-ID` propagation & structured JSON logging with strict zero-PII scrubbing | §7.1 | `TC-OBS-01`, `TC-OBS-04` |
 | Full status transition matrix (all 49 pairs) & `STATUS_CHANGE` never auto-transitions | §2.1 | `TC-EDGE-01`..`TC-EDGE-03` |
 | Dealership isolation & soft-delete exclusion on every lead endpoint | §2.4, §2.5 | `TC-EDGE-04`..`TC-EDGE-09` |
-| `occurred_at` time zone handling & validation (3 known gaps marked xfail) | §2.5, §8.5 | `TC-EDGE-10`..`TC-EDGE-13` |
+| `occurred_at` time zone handling & validation (no time zone → `422`, future beyond 5-minute clock allowance → `422`; 1 known gap marked xfail) | §2.5, §5.3.3, §8.5 | `TC-EDGE-10`..`TC-EDGE-13`, `TC-EDGE-21` |
 | `PATCH` version and same-status/backward-transition edge cases | §2.1, §4.2 | `TC-EDGE-14`..`TC-EDGE-17` |
 | Lead Inbox out-of-range pages, invalid query parameters & literal wildcard search | §5.3.1 | `TC-EDGE-18`..`TC-EDGE-20` |
 
@@ -142,7 +142,9 @@ To guarantee production-grade reliability without brittle external dependencies,
 
 These tests were added after a review of this specification found gaps in the original suite: most status transition pairs were untested, dealership isolation and soft deletion were checked on only some endpoints, and several input edge cases had no coverage.
 
-Three tests are marked `xfail(strict=True)`. They document known open points (SYSTEM_DESIGN.md, Section 8.5) and are expected to fail today. Because they are strict, a test that starts passing fails the suite until its marker is removed.
+One test (`TC-EDGE-13`) is marked `xfail(strict=True)`. It documents a known open point (SYSTEM_DESIGN.md, Section 8.5) and is expected to fail today. Because it is strict, it will fail the suite if it starts passing, until its marker is removed.
+
+`TC-EDGE-11` and `TC-EDGE-12` were originally marked `xfail` too. Both gaps were then fixed in the activity input schema and the markers removed. `TC-EDGE-21` was added with the fix to check the 5-minute clock allowance.
 
 | Test ID | Pytest Function | Cases | Inputs / Action | Expected Result |
 | :--- | :--- | :---: | :--- | :--- |
@@ -156,9 +158,9 @@ Three tests are marked `xfail(strict=True)`. They document known open points (SY
 | `TC-EDGE-08` | `test_soft_deleted_lead_cannot_receive_activities` | 1 | Soft-delete a lead, then `POST .../activities`. | `404 Not Found`. |
 | `TC-EDGE-09` | `test_soft_deleted_lead_activity_feed_returns_404` | 1 | Log an activity, soft-delete the lead, then `GET .../activities`. | `404 Not Found`. |
 | `TC-EDGE-10` | `test_occurred_at_with_timezone_offset_is_converted_to_utc` | 1 | Log an activity with `occurred_at="2026-11-26T18:30:00+07:00"`. | `201 Created`; `occurred_at` and `last_contacted_at` are `"2026-11-26T11:30:00Z"`. |
-| `TC-EDGE-11` | `test_occurred_at_without_timezone_is_rejected` | 1 | Log an activity with `occurred_at="2026-11-26T18:30:00"` (no time zone). | **xfail (known gap).** Expected `422`. Today the time is silently treated as UTC. |
-| `TC-EDGE-12` | `test_occurred_at_in_the_future_is_rejected` | 1 | Log an activity with `occurred_at` 30 days in the future. | **xfail (known gap).** Expected `422`. Today it is accepted. |
-| `TC-EDGE-13` | `test_occurred_at_before_lead_creation_is_rejected` | 1 | Log an activity with `occurred_at="2000-01-01T09:00:00Z"`. | **xfail (known gap).** Expected `422`. Today it is accepted. |
+| `TC-EDGE-11` | `test_occurred_at_without_timezone_is_rejected` | 1 | Log an activity with `occurred_at="2026-11-26T18:30:00"` (no time zone). | `422 Unprocessable Entity`; error field is `body.occurred_at` (the time is no longer silently treated as UTC). |
+| `TC-EDGE-12` | `test_occurred_at_in_the_future_is_rejected` | 1 | Log an activity with `occurred_at` 30 days in the future. | `422 Unprocessable Entity`; error field is `body.occurred_at`. |
+| `TC-EDGE-13` | `test_occurred_at_before_lead_creation_is_rejected` | 1 | Log an activity with `occurred_at="2000-01-01T09:00:00Z"`. | **xfail (known gap).** Expected `422`. Today it is accepted. Left open as a product decision (SYSTEM_DESIGN.md, Section 8.5). |
 | `TC-EDGE-14` | `test_patch_without_version_returns_422` | 1 | `PATCH` with no `version` field. | `422 Unprocessable Entity` (`application/problem+json`). |
 | `TC-EDGE-15` | `test_patch_with_version_ahead_of_current_returns_409` | 1 | `PATCH` with `version=99` on a lead at `version=1`. | `409 Conflict`; lead unchanged. |
 | `TC-EDGE-16` | `test_patch_to_same_status_is_accepted_and_keeps_status` | 1 | `PATCH` a `NEW` lead with `status="NEW"`. | `200 OK`; `status="NEW"`. |
@@ -166,8 +168,9 @@ Three tests are marked `xfail(strict=True)`. They document known open points (SY
 | `TC-EDGE-18` | `test_inbox_page_beyond_last_returns_empty_list` | 1 | `GET /api/v1/leads?page=5&page_size=20` with 1 lead. | `200 OK`; empty `items`, `total_items=1`, `has_next=false`. |
 | `TC-EDGE-19` | `test_inbox_invalid_query_parameters_return_422[<query>]` | 4 | `page=0`, `page_size=0`, `sort_by=bogus_field`, `sort_order=sideways`. | `422 Unprocessable Entity` (`application/problem+json`). |
 | `TC-EDGE-20` | `test_inbox_search_treats_sql_wildcards_as_literal_text[<wildcard>]` | 4 | `search` of `%`, `_`, `%%`, `__` with 1 lead that contains none of them. | `200 OK`; `total_items=0` (wildcards are matched as plain text). |
+| `TC-EDGE-21` | `test_occurred_at_slightly_ahead_of_server_clock_is_accepted` | 1 | Log an activity with `occurred_at` 1 minute in the future. | `201 Created` (within the 5-minute clock allowance). |
 
-**Suite F total:** 74 cases (71 pass, 3 xfail).
+**Suite F total:** 75 cases (74 pass, 1 xfail).
 
 ---
 
@@ -176,10 +179,10 @@ Three tests are marked `xfail(strict=True)`. They document known open points (SY
 Run from the repository root (`/Users/dothanhlong/Documents/Keyloop`):
 
 ```bash
-# Execute all 124 automated test cases (expected: 121 passed, 3 xfailed)
+# Execute all 125 automated test cases (expected: 124 passed, 1 xfailed)
 .venv/bin/pytest
 
-# List all 124 collected test cases without executing
+# List all 125 collected test cases without executing
 .venv/bin/pytest --collect-only -q
 
 # Execute individual suites
