@@ -168,7 +168,7 @@ stateDiagram-v2
 - **Default Ordering**: The Lead Details View returns activities in **ascending chronological order** (`occurred_at ASC, created_at ASC, id ASC`) to tell the complete story from first enquiry to latest follow-up. An optional query parameter (`activity_sort=desc`) allows UI consumers to flip to reverse-chronological order if preferred.
 
 ### 2.4 Multi-Dealership Context & Authentication (MVP vs. Production)
-- **Tenant Readiness Without Friction**: Every lead record includes a `dealership_id` column (defaulting to a seeded dealership UUID in MVP, or read from an optional `X-Dealer-ID` header). This keeps local evaluation zero-config while ensuring all queries and indexes are multi-tenant ready from Day 1.
+- **Tenant Readiness Without Friction**: Every lead record includes a `dealership_id` column (defaulting to a seeded dealership UUID in MVP, or read from an optional `X-Dealer-ID` header). This keeps local evaluation zero-config while ensuring every lead query and index is multi-tenant ready from Day 1. `activities` has no `dealership_id` of its own; it inherits the dealership through `lead_id`, and every activity read or write first loads the lead filtered by dealership.
 - **Actor Attribution**: In the MVP, `performed_by` (e.g., `"sarah.jenkins@dealer.co.uk"`) is accepted in the activity creation payload and validated as non-empty. In production, this identity is strictly extracted from a verified OIDC/JWT `sub` claim issued by Keyloop's Identity Provider (IdP) to prevent spoofing.
 
 ### 2.5 Pagination, Soft Deletion & Timezones
@@ -622,7 +622,7 @@ Gemini's first blueprint for Scenario C was a sound starting point. I kept its c
 |---|---|---|---|
 | Stack | Next.js/TypeScript with Prisma/SQLite (Gemini) | Python FastAPI, SQLAlchemy 2.0, Pydantic v2 (proposed by Antigravity, which I accepted) | The submission is backend-only, and FastAPI's built-in Swagger UI gave a working, documented interface without building a frontend. Python was also easier for me to read and review than TypeScript. |
 | Activity time | A single `created_at` | `occurred_at` and `created_at` | Sales executives often log calls and showroom visits later. One timestamp would put them in the wrong place on the customer timeline. |
-| Dealerships | Single dealership, no tenant column | `dealership_id` on every table, leading every composite index | Keyloop serves many dealerships. Adding tenancy later would mean rewriting the schema and indexes. |
+| Dealerships | Single dealership, no tenant column | `dealership_id` on every lead, leading every `leads` index. Activities inherit the dealership through their lead: every activity read or write first loads the lead filtered by dealership. | Keyloop serves many dealerships. Adding tenancy later would mean rewriting the schema and indexes. |
 | Lead lifecycle | Five statuses, with an automatic `NEW → CONTACTED` | Adds `TEST_DRIVE_SCHEDULED` and `NEGOTIATION`, with an explicit transition table | Matches how a dealership sales funnel actually runs. |
 | Follow-up tracking | `last_activity_at`, updated by any activity | `last_contacted_at`, ignoring internal notes and never moving backwards | Follow-up triage needs the time of the last real customer contact. |
 | Concurrent edits | Only double-click prevention | Optimistic locking with a `version` column and a `409` response | Two people editing the same lead must not silently overwrite each other. |
@@ -655,6 +655,7 @@ One detail worth noting in the code: Starlette middleware unwinds in reverse ord
 - `Idempotency-Key` is listed in the API contract but not implemented in the MVP.
 - `performed_by` comes from the request body, and the dealership from the `X-Dealer-ID` header. In production, both must come from the authenticated user's token.
 - There is no index on `assigned_to` for a sales executive's "my leads" view.
+- `activities` has no `dealership_id` column; it inherits the dealership through its lead. Row-Level Security in Stage 2 (Section 7.4) would therefore need either a policy that joins through `leads`, or a denormalized `dealership_id` on `activities`.
 
 ### 8.6 How I Would Apply This With a Team
 

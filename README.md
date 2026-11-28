@@ -236,7 +236,7 @@ AI was used throughout this assessment. The full account, including what I chang
 | **Google Antigravity** | Implementing the service from `SYSTEM_DESIGN.md`: FastAPI layers, the pytest suite, seed data, Docker setup, and a first draft of this README. |
 | **Claude** | Cross-model review of the finished design and code, then the edge-case test suite, the `occurred_at` validation fix, lint clean-up, and the PDF export of the design document. |
 
-The work was spec-first. I reworked Gemini's first blueprint before any code was written: dual activity timestamps (`occurred_at` and `created_at`), `dealership_id` on every table, a fuller lead lifecycle, and optimistic locking. Antigravity proposed FastAPI instead of Gemini's Next.js suggestion, and I accepted it for a backend-only submission. The finished `SYSTEM_DESIGN.md` was then the specification Antigravity built against.
+The work was spec-first. I reworked Gemini's first blueprint before any code was written: dual activity timestamps (`occurred_at` and `created_at`), `dealership_id` on every lead (activities inherit it through their lead), a fuller lead lifecycle, and optimistic locking. Antigravity proposed FastAPI instead of Gemini's Next.js suggestion, and I accepted it for a backend-only submission. The finished `SYSTEM_DESIGN.md` was then the specification Antigravity built against.
 
 ### 2. How the output was verified and refined
 
